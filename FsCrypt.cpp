@@ -483,6 +483,10 @@ static bool load_all_de_keys() {
     if (user0_needs_rebuild) {
         LOG(WARNING) << "User 0 DE key metadata is missing or broken; not rebuilding in recovery";
     }
+    if (s_de_policies.count(0) == 0) {
+        LOG(ERROR) << "User 0 DE policy was not installed; refusing to report DE ready";
+        return false;
+    }
     // fscrypt:TODO: go through all DE directories, ensure that all user dirs have the
     // correct policy set on them, and that no rogue ones exist.
     return true;
@@ -574,7 +578,8 @@ bool fscrypt_init_user0() {
         // explicit calls to install DE keys for secondary users
         LOG(INFO) << "Loading all DE keys";
         if (!load_all_de_keys()) {
-            LOG(WARNING) << "load_all_de_keys failed, continuing without rebuilding user keys";
+            LOG(ERROR) << "load_all_de_keys failed";
+            return false;
         }
     }
     // We can only safely prepare DE storage here, since CE keys are probably
@@ -583,7 +588,8 @@ bool fscrypt_init_user0() {
     LOG(INFO) << "Preparing user 0 DE storage";
     if (!fscrypt_prepare_user_storage("", 0, 0, android::os::IVold::STORAGE_FLAG_DE)) {
         if (fscrypt_is_native()) {
-            LOG(WARNING) << "Failed to prepare user 0 DE storage; continuing for CE unlock";
+            LOG(ERROR) << "Failed to prepare user 0 DE storage";
+            return false;
         } else {
             LOG(ERROR) << "Failed to prepare user 0 storage";
             return false;
