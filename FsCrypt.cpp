@@ -320,6 +320,32 @@ static bool read_and_install_user_ce_key(userid_t user_id,
     return true;
 }
 
+static bool ensure_user0_keys_initialized() {
+    auto de_key_path = get_de_key_path(0);
+    auto de_version_path = de_key_path + "/version";
+    auto ce_key_dir = get_ce_key_directory_path(0);
+    auto ce_current_version_path = ce_key_dir + "/current/version";
+
+    if (android::vold::pathExists(de_version_path) && android::vold::pathExists(ce_current_version_path)) {
+        return true;
+    }
+
+    LOG(INFO) << "Ensuring user 0 key metadata exists";
+    if (android::vold::pathExists(de_key_path)) {
+        LOG(INFO) << "Removing incomplete user 0 DE key directory: " << de_key_path;
+        if (!android::vold::destroyKey(de_key_path)) return false;
+    }
+    if (android::vold::pathExists(ce_key_dir)) {
+        LOG(INFO) << "User 0 CE key directory already exists: " << ce_key_dir;
+    }
+
+    if (!create_and_install_user_keys(0, false)) {
+        LOG(ERROR) << "Failed to recreate user 0 key material";
+        return false;
+    }
+    return true;
+}
+
 static bool prepare_dir(const std::string& dir, mode_t mode, uid_t uid, gid_t gid) {
     LOG(DEBUG) << "Preparing: " << dir;
     if (fs_prepare_dir(dir.c_str(), mode, uid, gid) != 0) {
@@ -504,10 +530,7 @@ bool fscrypt_init_user0() {
         if (!prepare_dir(user_key_dir, 0700, AID_ROOT, AID_ROOT)) return false;
         if (!prepare_dir(user_key_dir + "/ce", 0700, AID_ROOT, AID_ROOT)) return false;
         if (!prepare_dir(user_key_dir + "/de", 0700, AID_ROOT, AID_ROOT)) return false;
-        if (!android::vold::pathExists(get_de_key_path(0) + "/version")) {
-            LOG(INFO) << "User 0 DE key metadata missing, creating fresh keys";
-            if (!create_and_install_user_keys(0, false)) return false;
-        }
+        if (!ensure_user0_keys_initialized()) return false;
         // TODO: switch to loading only DE_0 here once framework makes
         // explicit calls to install DE keys for secondary users
         if (!load_all_de_keys()) return false;
@@ -778,6 +801,13 @@ std::vector<int> fscrypt_get_unlocked_users() {
 bool fscrypt_unlock_user_key(userid_t user_id, int serial, const std::string& secret_hex) {
     LOG(INFO) << "fscrypt_unlock_user_key " << user_id << " serial=" << serial;
     if (fscrypt_is_native()) {
+        if (user_id == 0 && s_ce_policies.count(user_id) == 0) {
+            if (!ensure_user0_keys_initialized()) return false;
+            if (s_ce_policies.count(user_id) != 0) {
+                LOG(INFO) << "User 0 key material was recreated and is now available";
+                return true;
+            }
+        }
         if (s_ce_policies.count(user_id) != 0) {
             LOG(WARNING) << "Tried to unlock already-unlocked key for user " << user_id;
             return true;
