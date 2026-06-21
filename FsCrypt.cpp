@@ -574,12 +574,7 @@ bool fscrypt_init_user0() {
         // explicit calls to install DE keys for secondary users
         LOG(INFO) << "Loading all DE keys";
         if (!load_all_de_keys()) {
-            LOG(WARNING) << "load_all_de_keys failed, trying user 0 rebuild path";
-            if (!rebuild_user0_key_material()) {
-                LOG(WARNING) << "rebuild_user0_key_material failed, continuing with best effort";
-            } else if (!load_all_de_keys()) {
-                LOG(WARNING) << "load_all_de_keys still failing after user 0 rebuild";
-            }
+            LOG(WARNING) << "load_all_de_keys failed, continuing without rebuilding user keys";
         }
     }
     // We can only safely prepare DE storage here, since CE keys are probably
@@ -587,8 +582,12 @@ bool fscrypt_init_user0() {
     // storage once CE keys are installed.
     LOG(INFO) << "Preparing user 0 DE storage";
     if (!fscrypt_prepare_user_storage("", 0, 0, android::os::IVold::STORAGE_FLAG_DE)) {
-        LOG(ERROR) << "Failed to prepare user 0 storage";
-        return false;
+        if (fscrypt_is_native()) {
+            LOG(WARNING) << "Failed to prepare user 0 DE storage; continuing for CE unlock";
+        } else {
+            LOG(ERROR) << "Failed to prepare user 0 storage";
+            return false;
+        }
     }
 
     // If this is a non-FBE device that recently left an emulated mode,

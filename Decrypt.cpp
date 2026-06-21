@@ -902,7 +902,8 @@ extern "C" bool Decrypt_User(const userid_t user_id, const std::string& Password
 
 	if (Default_Password) {
 		if (!Decrypt_CE_storage(user_id, 0, "!")) {
-			return Decrypt_User_Synth_Pass(user_id, Password);
+			printf("Default password CE unlock failed\n");
+			return false;
 		}
 		return true;
 	}
