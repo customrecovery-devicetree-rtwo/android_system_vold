@@ -306,13 +306,20 @@ bool is_metadata_wrapped_key_supported() {
     return GetEntryForMountPoint(&fstab_default, METADATA_MNT_POINT)->fs_mgr_flags.wrapped_key;
 }
 
+static bool ensure_user0_keys_initialized();
+
 static bool read_and_install_user_ce_key(userid_t user_id,
                                          const android::vold::KeyAuthentication& auth) {
     if (s_ce_policies.count(user_id) != 0) return true;
     EncryptionOptions options;
     if (!get_data_file_encryption_options(&options)) return false;
     KeyBuffer ce_key;
-    if (!read_and_fixate_user_ce_key(user_id, auth, &ce_key)) return false;
+    if (!read_and_fixate_user_ce_key(user_id, auth, &ce_key)) {
+        if (user_id != 0 || !ensure_user0_keys_initialized() ||
+            !read_and_fixate_user_ce_key(user_id, auth, &ce_key)) {
+            return false;
+        }
+    }
     EncryptionPolicy ce_policy;
     if (!install_storage_key(DATA_MNT_POINT, options, ce_key, &ce_policy)) return false;
     s_ce_policies[user_id] = ce_policy;
@@ -448,7 +455,14 @@ static bool load_all_de_keys() {
         auto key_path = de_dir + "/" + entry->d_name;
         KeyBuffer de_key;
         LOG(INFO) << "fscrypt::load_all_de_keys::retrieveKey";
-        if (!retrieveKey(key_path, kEmptyAuthentication, &de_key)) return false;
+        if (!retrieveKey(key_path, kEmptyAuthentication, &de_key)) {
+            if (user_id == 0 && ensure_user0_keys_initialized() &&
+                retrieveKey(key_path, kEmptyAuthentication, &de_key)) {
+                LOG(INFO) << "Recovered incomplete user 0 DE key material";
+            } else {
+                return false;
+            }
+        }
         EncryptionPolicy de_policy;
         if (!install_storage_key(DATA_MNT_POINT, options, de_key, &de_policy)) return false;
         auto ret = s_de_policies.insert({user_id, de_policy});
