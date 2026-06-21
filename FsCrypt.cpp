@@ -436,6 +436,10 @@ static bool load_all_de_keys() {
         PLOG(ERROR) << "Unable to read de key directory";
         return false;
     }
+    if (!android::vold::pathExists(get_de_key_path(0) + "/version")) {
+        LOG(INFO) << "User 0 DE key metadata missing before load, recreating";
+        if (!ensure_user0_keys_initialized()) return false;
+    }
     for (;;) {
         errno = 0;
         auto entry = readdir(dirp.get());
@@ -817,13 +821,7 @@ std::vector<int> fscrypt_get_unlocked_users() {
 bool fscrypt_unlock_user_key(userid_t user_id, int serial, const std::string& secret_hex) {
     LOG(INFO) << "fscrypt_unlock_user_key " << user_id << " serial=" << serial;
     if (fscrypt_is_native()) {
-        if (user_id == 0 && s_ce_policies.count(user_id) == 0) {
-            if (!ensure_user0_keys_initialized()) return false;
-            if (s_ce_policies.count(user_id) != 0) {
-                LOG(INFO) << "User 0 key material was recreated and is now available";
-                return true;
-            }
-        }
+        if (user_id == 0 && !ensure_user0_keys_initialized()) return false;
         if (s_ce_policies.count(user_id) != 0) {
             LOG(WARNING) << "Tried to unlock already-unlocked key for user " << user_id;
             return true;
