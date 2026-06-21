@@ -83,8 +83,11 @@ const KeyGeneration makeGen(const CryptoOptions& options) {
 static bool mount_via_fs_mgr(const char* mount_point, const char* blk_device) {
     // fs_mgr_do_mount runs fsck. Use setexeccon to run trusted
     // partitions in the fsck domain.
+    printf("fscrypt_mount_metadata_encrypted: mount_via_fs_mgr begin mount=%s blk=%s\n",
+           mount_point, blk_device);
     if (setexeccon(android::vold::sFsckContext)) {
         PLOG(ERROR) << "Failed to setexeccon";
+        printf("fscrypt_mount_metadata_encrypted: mount_via_fs_mgr setexeccon failed\n");
         return false;
     }
     auto mount_rc = fs_mgr_do_mount(&fstab_default, const_cast<char*>(mount_point),
@@ -92,13 +95,16 @@ static bool mount_via_fs_mgr(const char* mount_point, const char* blk_device) {
                                     android::vold::cp_needsCheckpoint(), true);
     if (setexeccon(nullptr)) {
         PLOG(ERROR) << "Failed to clear setexeccon";
+        printf("fscrypt_mount_metadata_encrypted: mount_via_fs_mgr clear setexeccon failed\n");
         return false;
     }
     if (mount_rc != 0) {
         LOG(ERROR) << "fs_mgr_do_mount failed with rc " << mount_rc;
+        printf("fscrypt_mount_metadata_encrypted: mount_via_fs_mgr failed rc=%d\n", mount_rc);
         return false;
     }
     LOG(INFO) << "Mounted " << mount_point;
+    printf("fscrypt_mount_metadata_encrypted: mount_via_fs_mgr ok mount=%s\n", mount_point);
     return true;
 }
 
@@ -336,7 +342,11 @@ bool fscrypt_mount_metadata_encrypted(const std::string& blk_device, const std::
     }
 
     LOG(INFO) << "Mounting metadata-encrypted filesystem:" << mount_point;
-    mount_via_fs_mgr(mount_point.c_str(), crypto_blkdev.c_str());
+    if (!mount_via_fs_mgr(mount_point.c_str(), crypto_blkdev.c_str())) {
+        printf("fscrypt_mount_metadata_encrypted: mount failed for %s on %s\n",
+               mount_point.c_str(), crypto_blkdev.c_str());
+        return false;
+    }
     android::base::SetProperty("ro.crypto.fs_crypto_blkdev", crypto_blkdev);
 
     // Record that there's at least one fstab entry with metadata encryption
