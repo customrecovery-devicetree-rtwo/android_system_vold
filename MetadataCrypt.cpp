@@ -81,6 +81,20 @@ const KeyGeneration makeGen(const CryptoOptions& options) {
 }
 
 static bool mount_via_fs_mgr(const char* mount_point, const char* blk_device) {
+    auto data_rec = GetEntryForMountPoint(&fstab_default, mount_point);
+    if (data_rec && data_rec->fs_type == "f2fs") {
+        printf("fscrypt_mount_metadata_encrypted: direct f2fs mount begin mount=%s blk=%s\n",
+               mount_point, blk_device);
+        status_t res = f2fs::Mount(blk_device, mount_point);
+        if (res != 0) {
+            printf("fscrypt_mount_metadata_encrypted: direct f2fs mount failed rc=%d errno=%d\n",
+                   res, errno);
+            return false;
+        }
+        printf("fscrypt_mount_metadata_encrypted: direct f2fs mount ok mount=%s\n", mount_point);
+        return true;
+    }
+
     // fs_mgr_do_mount runs fsck. Use setexeccon to run trusted
     // partitions in the fsck domain.
     printf("fscrypt_mount_metadata_encrypted: mount_via_fs_mgr begin mount=%s blk=%s\n",
