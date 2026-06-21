@@ -504,7 +504,8 @@ bool fscrypt_init_user0() {
         if (!prepare_dir(user_key_dir, 0700, AID_ROOT, AID_ROOT)) return false;
         if (!prepare_dir(user_key_dir + "/ce", 0700, AID_ROOT, AID_ROOT)) return false;
         if (!prepare_dir(user_key_dir + "/de", 0700, AID_ROOT, AID_ROOT)) return false;
-        if (!android::vold::pathExists(get_de_key_path(0))) {
+        if (!android::vold::pathExists(get_de_key_path(0) + "/version")) {
+            LOG(INFO) << "User 0 DE key metadata missing, creating fresh keys";
             if (!create_and_install_user_keys(0, false)) return false;
         }
         // TODO: switch to loading only DE_0 here once framework makes
