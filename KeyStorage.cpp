@@ -346,6 +346,7 @@ static KeymasterOperation BeginKeymasterOp(Keymaster& keymaster, const std::stri
 
     auto blob_file = dir + "/" + kFn_keymaster_key_blob;
     LOG(INFO) << "reading blob_file: " << blob_file;
+    printf("BeginKeymasterOp: blob_file=%s\n", blob_file.c_str());
     std::string blob_dir(kFn_keymaster_key_blob);
     std::string temp_dir = "/tmp/" + blob_dir + "/";
     if (TEMP_FAILURE_RETRY(mkdir(temp_dir.c_str(), 0700)) == -1) {
@@ -364,10 +365,20 @@ static KeymasterOperation BeginKeymasterOp(Keymaster& keymaster, const std::stri
     //     if (!readFileToString(upgraded_blob_file, &blob)) return KeymasterOperation();
     // } else {
         // DeleteUpgradedKey(keymaster, upgraded_blob_file);
-    if (!readFileToString(blob_file, &blob)) return KeymasterOperation();
+    if (!readFileToString(blob_file, &blob)) {
+        printf("BeginKeymasterOp: failed reading blob_file\n");
+        return KeymasterOperation();
+    }
+    printf("BeginKeymasterOp: blob_size=%zu\n", blob.size());
     // }
     auto opHandle = keymaster.begin(blob, inParams, outParams);
-    if (!opHandle) return opHandle;
+    if (!opHandle) {
+        printf("BeginKeymasterOp: keymaster.begin failed error=%d\n",
+               static_cast<int>(opHandle.getErrorCode()));
+        return opHandle;
+    }
+    printf("BeginKeymasterOp: keymaster.begin ok upgraded=%d\n",
+           opHandle.getUpgradedBlob().has_value());
 
     // If key blob wasn't upgraded, nothing left to do.
     // if (!opHandle.getUpgradedBlob()) return opHandle;
@@ -377,10 +388,15 @@ static KeymasterOperation BeginKeymasterOp(Keymaster& keymaster, const std::stri
     //                << " still requires upgrade";
     //     return KeymasterOperation();
     // }
-    LOG(INFO) << "Upgrading key: " << blob_file;
-    
-    if (!writeStringToFile(*opHandle.getUpgradedBlob(), upgraded_blob_file))
-        return KeymasterOperation();
+    if (opHandle.getUpgradedBlob()) {
+        LOG(INFO) << "Upgrading key: " << blob_file;
+        printf("BeginKeymasterOp: writing upgraded blob to %s\n", upgraded_blob_file.c_str());
+
+        if (!writeStringToFile(*opHandle.getUpgradedBlob(), upgraded_blob_file)) {
+            printf("BeginKeymasterOp: failed writing upgraded blob\n");
+            return KeymasterOperation();
+        }
+    }
     // if (cp_needsCheckpoint()) {
     //     LOG(INFO) << "Wrote upgraded key to " << upgraded_blob_file
     //               << "; delaying commit due to checkpoint";
@@ -609,25 +625,50 @@ bool storeKeyAtomically(const std::string& key_path, const std::string& tmp_path
 
 bool retrieveKey(const std::string& dir, const KeyAuthentication& auth, KeyBuffer* key) {
     LOG(INFO) << "Retrieving key from keymaster";
+    printf("retrieveKey: dir=%s usesKeymaster=%d\n", dir.c_str(), auth.usesKeymaster());
     std::string version;
-    if (!readFileToString(dir + "/" + kFn_version, &version)) return false;
+    if (!readFileToString(dir + "/" + kFn_version, &version)) {
+        printf("retrieveKey: failed reading %s/%s\n", dir.c_str(), kFn_version);
+        return false;
+    }
+    printf("retrieveKey: version=%s\n", version.c_str());
     if (version != kCurrentVersion) {
         LOG(ERROR) << "Version mismatch, expected " << kCurrentVersion << " got " << version;
+        printf("retrieveKey: version mismatch expected=%s got=%s\n", kCurrentVersion, version.c_str());
         return false;
     }
     std::string secdiscardable_hash;
-    if (!readSecdiscardable(dir + "/" + kFn_secdiscardable, &secdiscardable_hash)) return false;
+    if (!readSecdiscardable(dir + "/" + kFn_secdiscardable, &secdiscardable_hash)) {
+        printf("retrieveKey: failed reading secdiscardable\n");
+        return false;
+    }
+    printf("retrieveKey: secdiscardable_hash_size=%zu\n", secdiscardable_hash.size());
     std::string appId = generateAppId(auth, secdiscardable_hash);
+    printf("retrieveKey: appId_size=%zu\n", appId.size());
     std::string encryptedMessage;
-    if (!readFileToString(dir + "/" + kFn_encrypted_key, &encryptedMessage)) return false;
+    if (!readFileToString(dir + "/" + kFn_encrypted_key, &encryptedMessage)) {
+        printf("retrieveKey: failed reading %s/%s\n", dir.c_str(), kFn_encrypted_key);
+        return false;
+    }
+    printf("retrieveKey: encrypted_key_size=%zu\n", encryptedMessage.size());
     if (auth.usesKeymaster()) {
         Keymaster keymaster;
-        if (!keymaster) return false;
-        km::AuthorizationSet keyParams = beginParams(appId);
-        if (!decryptWithKeymasterKey(keymaster, dir, keyParams, encryptedMessage, key))
+        if (!keymaster) {
+            printf("retrieveKey: keymaster service unavailable\n");
             return false;
+        }
+        km::AuthorizationSet keyParams = beginParams(appId);
+        if (!decryptWithKeymasterKey(keymaster, dir, keyParams, encryptedMessage, key)) {
+            printf("retrieveKey: decryptWithKeymasterKey failed\n");
+            return false;
+        }
+        printf("retrieveKey: decryptWithKeymasterKey ok key_size=%zu\n", key->size());
     } else {
-        if (!decryptWithoutKeymaster(appId, encryptedMessage, key)) return false;
+        if (!decryptWithoutKeymaster(appId, encryptedMessage, key)) {
+            printf("retrieveKey: decryptWithoutKeymaster failed\n");
+            return false;
+        }
+        printf("retrieveKey: decryptWithoutKeymaster ok key_size=%zu\n", key->size());
     }
     return true;
 }

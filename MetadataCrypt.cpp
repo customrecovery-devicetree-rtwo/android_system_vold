@@ -217,9 +217,13 @@ bool fscrypt_mount_metadata_encrypted(const std::string& blk_device, const std::
     LOG(INFO) << "fscrypt_mount_metadata_encrypted: " << mount_point
                << " encrypt: " << needs_encrypt << " format: " << should_format << " with "
                << fs_type;
+    printf("fscrypt_mount_metadata_encrypted: blk=%s mount=%s fs=%s fstab=%s\n",
+           blk_device.c_str(), mount_point.c_str(), fs_type.c_str(), fstab_path.c_str());
     auto encrypted_state = android::base::GetProperty("ro.crypto.state", "");
     if (encrypted_state != "" && encrypted_state != "encrypted") {
         LOG(INFO) << "fscrypt_enable_crypto got unexpected starting state: " << encrypted_state;
+        printf("fscrypt_mount_metadata_encrypted: unexpected ro.crypto.state=%s\n",
+               encrypted_state.c_str());
         return false;
     }
     if (!fstab_path.empty()) {
@@ -240,8 +244,12 @@ bool fscrypt_mount_metadata_encrypted(const std::string& blk_device, const std::
     auto data_rec = GetEntryForMountPoint(&fstab_default, mount_point);
     if (!data_rec) {
         LOG(ERROR) << "Failed to get data_rec for " << mount_point;
+        printf("fscrypt_mount_metadata_encrypted: no fstab entry for %s\n", mount_point.c_str());
         return false;
     }
+    printf("fscrypt_mount_metadata_encrypted: data_rec blk=%s fileenc=%s metadata_key_dir=%s metadata_encryption=%s\n",
+           data_rec->blk_device.c_str(), data_rec->encryption_options.c_str(),
+           data_rec->metadata_key_dir.c_str(), data_rec->metadata_encryption.c_str());
 
     unsigned int options_format_version = 1;
     {
@@ -249,14 +257,20 @@ bool fscrypt_mount_metadata_encrypted(const std::string& blk_device, const std::
         if (!ParseOptions(data_rec->encryption_options, &options)) {
             LOG(ERROR) << "Unable to parse encryption options for " << DATA_MNT_POINT ": "
                        << data_rec->encryption_options;
+            printf("fscrypt_mount_metadata_encrypted: failed ParseOptions(%s)\n",
+                   data_rec->encryption_options.c_str());
         }
         options_format_version = options.version;
     }
+    printf("fscrypt_mount_metadata_encrypted: options_format_version=%u\n",
+           options_format_version);
 
     CryptoOptions options;
     if (options_format_version == 1) {
         if (!data_rec->metadata_encryption.empty()) {
             LOG(ERROR) << "metadata_encryption options cannot be set in legacy mode";
+            printf("fscrypt_mount_metadata_encrypted: metadata_encryption set in legacy mode: %s\n",
+                   data_rec->metadata_encryption.c_str());
             return false;
         }
         options.cipher = legacy_aes_256_xts;
@@ -270,20 +284,37 @@ bool fscrypt_mount_metadata_encrypted(const std::string& blk_device, const std::
             return false;
         }
     } else if (options_format_version == 2) {
-        if (!parse_options(data_rec->metadata_encryption, &options)) return false;
+        if (!parse_options(data_rec->metadata_encryption, &options)) {
+            printf("fscrypt_mount_metadata_encrypted: failed parse_options(%s)\n",
+                   data_rec->metadata_encryption.c_str());
+            return false;
+        }
     } else {
         LOG(ERROR) << "Unknown options_format_version: " << options_format_version;
+        printf("fscrypt_mount_metadata_encrypted: unknown options_format_version=%u\n",
+               options_format_version);
         return false;
     }
 
     auto gen = needs_encrypt ? makeGen(options) : neverGen();
     KeyBuffer key;
-    if (!read_key(data_rec->metadata_key_dir, gen, &key)) return false;
+    if (!read_key(data_rec->metadata_key_dir, gen, &key)) {
+        printf("fscrypt_mount_metadata_encrypted: read_key failed for %s\n",
+               data_rec->metadata_key_dir.c_str());
+        return false;
+    }
+    printf("fscrypt_mount_metadata_encrypted: read_key ok, key_size=%zu wrapped=%d\n",
+           key.size(), options.use_hw_wrapped_key);
 
     std::string crypto_blkdev;
     uint64_t nr_sec;
-    if (!create_crypto_blk_dev(kDmNameUserdata, blk_device, key, options, &crypto_blkdev, &nr_sec))
+    if (!create_crypto_blk_dev(kDmNameUserdata, blk_device, key, options, &crypto_blkdev, &nr_sec)) {
+        printf("fscrypt_mount_metadata_encrypted: create_crypto_blk_dev failed for %s\n",
+               blk_device.c_str());
         return false;
+    }
+    printf("fscrypt_mount_metadata_encrypted: create_crypto_blk_dev ok, crypto_blkdev=%s sectors=%llu\n",
+           crypto_blkdev.c_str(), static_cast<unsigned long long>(nr_sec));
 
     if (needs_encrypt) {
         if (should_format) {

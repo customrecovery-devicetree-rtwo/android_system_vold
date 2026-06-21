@@ -98,7 +98,7 @@ bool KeymasterOperation::finish(std::string* output) {
         return false;
     }
 
-    if (output) *output = std::string(out_vec->begin(), out_vec->end());
+    if (output && out_vec) *output = std::string(out_vec->begin(), out_vec->end());
 
     return true;
 }
