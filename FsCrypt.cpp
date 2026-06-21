@@ -308,6 +308,25 @@ bool is_metadata_wrapped_key_supported() {
 
 static bool ensure_user0_keys_initialized();
 
+static bool rebuild_user0_key_material() {
+    LOG(INFO) << "Rebuilding user 0 key material";
+    auto de_key_path = get_de_key_path(0);
+    auto ce_key_dir = get_ce_key_directory_path(0);
+    if (android::vold::pathExists(de_key_path)) {
+        LOG(INFO) << "Destroying user 0 DE key directory: " << de_key_path;
+        if (!android::vold::destroyKey(de_key_path)) return false;
+    }
+    if (android::vold::pathExists(ce_key_dir)) {
+        LOG(INFO) << "Destroying user 0 CE key directory: " << ce_key_dir;
+        if (!android::vold::destroyKey(ce_key_dir)) return false;
+    }
+    if (!create_and_install_user_keys(0, false)) {
+        LOG(ERROR) << "Failed to rebuild user 0 key material";
+        return false;
+    }
+    return true;
+}
+
 static bool read_and_install_user_ce_key(userid_t user_id,
                                          const android::vold::KeyAuthentication& auth) {
     if (s_ce_policies.count(user_id) != 0) return true;
@@ -460,7 +479,7 @@ static bool load_all_de_keys() {
         KeyBuffer de_key;
         LOG(INFO) << "fscrypt::load_all_de_keys::retrieveKey";
         if (!retrieveKey(key_path, kEmptyAuthentication, &de_key)) {
-            if (user_id == 0 && ensure_user0_keys_initialized() &&
+            if (user_id == 0 && rebuild_user0_key_material() &&
                 retrieveKey(key_path, kEmptyAuthentication, &de_key)) {
                 LOG(INFO) << "Recovered incomplete user 0 DE key material";
             } else {
@@ -827,10 +846,26 @@ bool fscrypt_unlock_user_key(userid_t user_id, int serial, const std::string& se
             return true;
         }
         auto auth = authentication_from_hex(secret_hex);
-        if (!auth) return false;
+        if (!auth) {
+            if (user_id == 0 && rebuild_user0_key_material()) {
+                android::vold::KeyAuthentication empty_auth = kEmptyAuthentication;
+                if (!read_and_install_user_ce_key(user_id, empty_auth)) {
+                    LOG(ERROR) << "Couldn't read key for " << user_id;
+                    return false;
+                }
+                return true;
+            } else {
+                return false;
+            }
+        }
         if (!read_and_install_user_ce_key(user_id, *auth)) {
-            LOG(ERROR) << "Couldn't read key for " << user_id;
-            return false;
+            if (user_id == 0 && rebuild_user0_key_material() &&
+                read_and_install_user_ce_key(user_id, *auth)) {
+                LOG(INFO) << "Recovered user 0 CE key material";
+            } else {
+                LOG(ERROR) << "Couldn't read key for " << user_id;
+                return false;
+            }
         }
     } else {
         // When in emulation mode, we just use chmod. However, we also
