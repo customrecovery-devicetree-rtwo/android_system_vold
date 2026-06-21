@@ -454,9 +454,10 @@ static bool load_all_de_keys() {
         PLOG(ERROR) << "Unable to read de key directory";
         return false;
     }
+    bool user0_needs_rebuild = false;
     if (!android::vold::pathExists(get_de_key_path(0) + "/version")) {
         LOG(INFO) << "User 0 DE key metadata missing before load, recreating";
-        if (!ensure_user0_keys_initialized()) return false;
+        user0_needs_rebuild = true;
     }
     for (;;) {
         errno = 0;
@@ -478,9 +479,10 @@ static bool load_all_de_keys() {
         KeyBuffer de_key;
         LOG(INFO) << "fscrypt::load_all_de_keys::retrieveKey";
         if (!retrieveKey(key_path, kEmptyAuthentication, &de_key)) {
-            if (user_id == 0 && rebuild_user0_key_material() &&
-                retrieveKey(key_path, kEmptyAuthentication, &de_key)) {
-                LOG(INFO) << "Recovered incomplete user 0 DE key material";
+            if (user_id == 0) {
+                user0_needs_rebuild = true;
+                LOG(INFO) << "Skipping broken user 0 DE key entry for now";
+                continue;
             } else {
                 return false;
             }
@@ -495,6 +497,17 @@ static bool load_all_de_keys() {
         LOG(INFO) << "Installed de key for user " << user_id;
         std::string user_prop = "twrp.user." + std::to_string(user_id) + ".decrypt";
         property_set(user_prop.c_str(), "0");
+    }
+    if (user0_needs_rebuild) {
+        LOG(INFO) << "Rebuilding user 0 key material after DE scan";
+        if (!rebuild_user0_key_material()) return false;
+        KeyBuffer de_key;
+        if (!retrieveKey(get_de_key_path(0), kEmptyAuthentication, &de_key)) return false;
+        EncryptionPolicy de_policy;
+        if (!install_storage_key(DATA_MNT_POINT, options, de_key, &de_policy)) return false;
+        s_de_policies[0] = de_policy;
+        LOG(INFO) << "Recovered incomplete user 0 DE key material";
+        property_set("twrp.user.0.decrypt", "0");
     }
     // fscrypt:TODO: go through all DE directories, ensure that all user dirs have the
     // correct policy set on them, and that no rogue ones exist.
