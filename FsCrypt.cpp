@@ -320,6 +320,10 @@ static bool read_and_install_user_ce_key(userid_t user_id,
     return true;
 }
 
+// NB this assumes that there is only one thread listening for crypt commands, because
+// it creates keys in a fixed location.
+static bool create_and_install_user_keys(userid_t user_id, bool create_ephemeral);
+
 static bool ensure_user0_keys_initialized() {
     auto de_key_path = get_de_key_path(0);
     auto de_version_path = de_key_path + "/version";
@@ -364,8 +368,6 @@ static bool destroy_dir(const std::string& dir) {
     return true;
 }
 
-// NB this assumes that there is only one thread listening for crypt commands, because
-// it creates keys in a fixed location.
 static bool create_and_install_user_keys(userid_t user_id, bool create_ephemeral) {
     EncryptionOptions options;
     if (!get_data_file_encryption_options(&options)) return false;
