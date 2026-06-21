@@ -312,22 +312,8 @@ static bool ensure_user0_keys_initialized();
 static bool create_and_install_user_keys(userid_t user_id, bool create_ephemeral);
 
 static bool rebuild_user0_key_material() {
-    LOG(INFO) << "Rebuilding user 0 key material";
-    auto de_key_path = get_de_key_path(0);
-    auto ce_key_dir = get_ce_key_directory_path(0);
-    if (android::vold::pathExists(de_key_path)) {
-        LOG(INFO) << "Destroying user 0 DE key directory: " << de_key_path;
-        if (!android::vold::destroyKey(de_key_path)) return false;
-    }
-    if (android::vold::pathExists(ce_key_dir)) {
-        LOG(INFO) << "Destroying user 0 CE key directory: " << ce_key_dir;
-        if (!android::vold::destroyKey(ce_key_dir)) return false;
-    }
-    if (!create_and_install_user_keys(0, false)) {
-        LOG(ERROR) << "Failed to rebuild user 0 key material";
-        return false;
-    }
-    return true;
+    LOG(WARNING) << "Refusing to rebuild user 0 key material in recovery";
+    return false;
 }
 
 static bool read_and_install_user_ce_key(userid_t user_id,
@@ -361,17 +347,13 @@ static bool ensure_user0_keys_initialized() {
 
     LOG(INFO) << "Ensuring user 0 key metadata exists";
     if (android::vold::pathExists(de_key_path)) {
-        LOG(INFO) << "Removing incomplete user 0 DE key directory: " << de_key_path;
-        if (!android::vold::destroyKey(de_key_path)) return false;
+        LOG(WARNING) << "User 0 DE key metadata is incomplete; leaving existing keys untouched: "
+                     << de_key_path;
     }
     if (android::vold::pathExists(ce_key_dir)) {
         LOG(INFO) << "User 0 CE key directory already exists: " << ce_key_dir;
     }
 
-    if (!create_and_install_user_keys(0, false)) {
-        LOG(ERROR) << "Failed to recreate user 0 key material";
-        return false;
-    }
     return true;
 }
 
@@ -499,15 +481,7 @@ static bool load_all_de_keys() {
         property_set(user_prop.c_str(), "0");
     }
     if (user0_needs_rebuild) {
-        LOG(INFO) << "Rebuilding user 0 key material after DE scan";
-        if (!rebuild_user0_key_material()) return false;
-        KeyBuffer de_key;
-        if (!retrieveKey(get_de_key_path(0), kEmptyAuthentication, &de_key)) return false;
-        EncryptionPolicy de_policy;
-        if (!install_storage_key(DATA_MNT_POINT, options, de_key, &de_policy)) return false;
-        s_de_policies[0] = de_policy;
-        LOG(INFO) << "Recovered incomplete user 0 DE key material";
-        property_set("twrp.user.0.decrypt", "0");
+        LOG(WARNING) << "User 0 DE key metadata is missing or broken; not rebuilding in recovery";
     }
     // fscrypt:TODO: go through all DE directories, ensure that all user dirs have the
     // correct policy set on them, and that no rogue ones exist.
