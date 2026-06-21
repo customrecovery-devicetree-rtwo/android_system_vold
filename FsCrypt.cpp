@@ -659,6 +659,9 @@ static bool parse_hex(const std::string& hex, std::string* result) {
 
 static std::optional<android::vold::KeyAuthentication> authentication_from_hex(
         const std::string& secret_hex) {
+    if (secret_hex == "!") {
+        return kEmptyAuthentication;
+    }
     std::string secret;
     if (!parse_hex(secret_hex, &secret)) return std::optional<android::vold::KeyAuthentication>();
     if (secret.empty()) {
