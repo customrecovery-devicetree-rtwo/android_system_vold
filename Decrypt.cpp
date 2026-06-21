@@ -188,6 +188,7 @@ extern "C" bool Decrypt_DE() {
 		printf("fscrypt_initialize_systemwide_keys returned fail\n");
 		return false;
 	}
+	printf("Attempting to ensure user 0 key material before user storage setup\n");
 	if (!fscrypt_init_user0()) {
 		printf("fscrypt_init_user0 returned fail\n");
 		return false;
