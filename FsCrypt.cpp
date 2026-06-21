@@ -601,10 +601,10 @@ bool fscrypt_init_user0() {
         LOG(INFO) << "Loading all DE keys";
         if (!load_all_de_keys()) {
             LOG(WARNING) << "load_all_de_keys failed, trying user 0 rebuild path";
-            if (!rebuild_user0_key_material()) return false;
-            if (!load_all_de_keys()) {
-                LOG(ERROR) << "load_all_de_keys still failing after user 0 rebuild";
-                return false;
+            if (!rebuild_user0_key_material()) {
+                LOG(WARNING) << "rebuild_user0_key_material failed, continuing with best effort";
+            } else if (!load_all_de_keys()) {
+                LOG(WARNING) << "load_all_de_keys still failing after user 0 rebuild";
             }
         }
     }
