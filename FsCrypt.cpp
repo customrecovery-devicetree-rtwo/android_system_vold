@@ -578,17 +578,40 @@ install:
 bool fscrypt_init_user0() {
     LOG(INFO) << "fscrypt_init_user0";
     if (fscrypt_is_native()) {
-        if (!prepare_dir(user_key_dir, 0700, AID_ROOT, AID_ROOT)) return false;
-        if (!prepare_dir(user_key_dir + "/ce", 0700, AID_ROOT, AID_ROOT)) return false;
-        if (!prepare_dir(user_key_dir + "/de", 0700, AID_ROOT, AID_ROOT)) return false;
-        if (!ensure_user0_keys_initialized()) return false;
+        LOG(INFO) << "Preparing user key directories";
+        if (!prepare_dir(user_key_dir, 0700, AID_ROOT, AID_ROOT)) {
+            LOG(ERROR) << "Failed to prepare " << user_key_dir;
+            return false;
+        }
+        if (!prepare_dir(user_key_dir + "/ce", 0700, AID_ROOT, AID_ROOT)) {
+            LOG(ERROR) << "Failed to prepare " << user_key_dir + "/ce";
+            return false;
+        }
+        if (!prepare_dir(user_key_dir + "/de", 0700, AID_ROOT, AID_ROOT)) {
+            LOG(ERROR) << "Failed to prepare " << user_key_dir + "/de";
+            return false;
+        }
+        LOG(INFO) << "Ensuring user 0 key metadata";
+        if (!ensure_user0_keys_initialized()) {
+            LOG(ERROR) << "ensure_user0_keys_initialized failed";
+            return false;
+        }
         // TODO: switch to loading only DE_0 here once framework makes
         // explicit calls to install DE keys for secondary users
-        if (!load_all_de_keys()) return false;
+        LOG(INFO) << "Loading all DE keys";
+        if (!load_all_de_keys()) {
+            LOG(WARNING) << "load_all_de_keys failed, trying user 0 rebuild path";
+            if (!rebuild_user0_key_material()) return false;
+            if (!load_all_de_keys()) {
+                LOG(ERROR) << "load_all_de_keys still failing after user 0 rebuild";
+                return false;
+            }
+        }
     }
     // We can only safely prepare DE storage here, since CE keys are probably
     // entangled with user credentials.  The framework will always prepare CE
     // storage once CE keys are installed.
+    LOG(INFO) << "Preparing user 0 DE storage";
     if (!fscrypt_prepare_user_storage("", 0, 0, android::os::IVold::STORAGE_FLAG_DE)) {
         LOG(ERROR) << "Failed to prepare user 0 storage";
         return false;
