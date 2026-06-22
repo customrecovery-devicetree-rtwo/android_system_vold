@@ -903,15 +903,28 @@ extern "C" bool Decrypt_User(const userid_t user_id, const std::string& Password
 		return false;
 	}
 
+	auto try_synthetic_password = [&]() -> bool {
+		struct stat spblob_st;
+		char spblob_path_char[PATH_MAX];
+		sprintf(spblob_path_char, "/data/system_de/%d/spblob/", user_id);
+		if (stat(spblob_path_char, &spblob_st) == 0) {
+			printf("Using synthetic password method\n");
+			return Decrypt_User_Synth_Pass(user_id, Password);
+		}
+		return false;
+	};
+
 	if (Default_Password) {
+		if (try_synthetic_password()) {
+			return true;
+		}
 		if (!Decrypt_CE_storage(user_id, 0, "!")) {
 			printf("Default password CE unlock failed\n");
 			return false;
 		}
 		return true;
 	}
-	if (stat("/data/system_de/0/spblob", &st) == 0) {
-		printf("Using synthetic password method\n");
+	if (try_synthetic_password()) {
 		return Decrypt_User_Synth_Pass(user_id, Password);
 	}
 	// printf("password filename is '%s'\n", filename.c_str());
