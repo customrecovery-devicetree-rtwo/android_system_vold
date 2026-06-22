@@ -29,6 +29,7 @@
 
 #include <errno.h>
 #include <stdio.h>
+#include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -188,7 +189,21 @@ static km::AuthorizationSet beginParams(const std::string& appId) {
 
 static bool readFileToString(const std::string& filename, std::string* result) {
     if (!android::base::ReadFileToString(filename, result)) {
+        int saved_errno = errno;
+        struct stat st;
+        int stat_result = stat(filename.c_str(), &st);
+        int stat_errno = errno;
+        int access_result = access(filename.c_str(), R_OK);
+        int access_errno = errno;
         PLOG(ERROR) << "Failed to read from " << filename;
+        printf("readFileToString: FAILED file=%s errno=%d (%s) stat=%d stat_errno=%d (%s) access_R_OK=%d access_errno=%d (%s)\n",
+               filename.c_str(), saved_errno, strerror(saved_errno),
+               stat_result, stat_errno, strerror(stat_errno),
+               access_result, access_errno, strerror(access_errno));
+        if (stat_result == 0) {
+            printf("readFileToString: stat mode=%o uid=%d gid=%d size=%lld\n",
+                   st.st_mode, st.st_uid, st.st_gid, static_cast<long long>(st.st_size));
+        }
         return false;
     }
     return true;

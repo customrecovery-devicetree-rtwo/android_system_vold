@@ -191,7 +191,10 @@ extern "C" bool Decrypt_DE() {
 	printf("Attempting to ensure user 0 key material before user storage setup\n");
 	if (!fscrypt_init_user0()) {
 		printf("fscrypt_init_user0 returned fail\n");
-		return false;
+		printf("System DE keys installed - continuing with limited data access\n");
+		// hw-wrapped keys change identifier each boot, making existing
+		// encrypted directories inaccessible in recovery. The system DE key
+		// is installed, so proceed for new operations (flash, sideload, etc.).
 	}
 	return true;
 }

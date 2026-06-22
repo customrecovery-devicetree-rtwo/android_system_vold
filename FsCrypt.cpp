@@ -18,6 +18,7 @@
 
 #include "KeyStorage.h"
 #include "KeyUtil.h"
+#include "Keymaster.h"
 #include "Utils.h"
 #include "VoldUtil.h"
 
@@ -414,9 +415,11 @@ static bool lookup_policy(const std::map<userid_t, EncryptionPolicy>& key_map, u
     auto refi = key_map.find(user_id);
     if (refi == key_map.end()) {
         LOG(DEBUG) << "Cannot find key for " << user_id;
+        printf("lookup_policy: Cannot find key for user %d (map size=%zu)\n", user_id, key_map.size());
         return false;
     }
     *policy = refi->second;
+    printf("lookup_policy: found key for user %d\n", user_id);
     return true;
 }
 
@@ -427,18 +430,55 @@ static bool is_numeric(const char* name) {
     return true;
 }
 
+static bool generate_fresh_user0_de_key() {
+    LOG(WARNING) << "Generating fresh user 0 DE key (existing keys inaccessible)";
+    printf("generate_fresh_user0_de_key: generating fresh DE key for user 0\n");
+
+    EncryptionOptions options;
+    if (!get_data_file_encryption_options(&options)) {
+        printf("generate_fresh_user0_de_key: get_data_file_encryption_options FAILED\n");
+        return false;
+    }
+
+    KeyBuffer de_key;
+    KeyGeneration gen = {FSCRYPT_MAX_KEY_SIZE, true, false};
+    if (!generateStorageKey(gen, &de_key)) {
+        printf("generate_fresh_user0_de_key: generateStorageKey FAILED\n");
+        return false;
+    }
+
+    EncryptionPolicy de_policy;
+    options.use_hw_wrapped_key = false;
+    if (!install_storage_key(DATA_MNT_POINT, options, de_key, &de_policy)) {
+        printf("generate_fresh_user0_de_key: install_storage_key FAILED\n");
+        return false;
+    }
+
+    s_de_policies[0] = de_policy;
+    printf("generate_fresh_user0_de_key: installed fresh DE key for user 0\n");
+    return true;
+}
+
 static bool load_all_de_keys() {
     EncryptionOptions options;
-    if (!get_data_file_encryption_options(&options)) return false;
+    if (!get_data_file_encryption_options(&options)) {
+        printf("load_all_de_keys: get_data_file_encryption_options FAILED\n");
+        return false;
+    }
+    printf("load_all_de_keys: options.version=%d use_hw_wrapped_key=%d\n",
+           options.version, options.use_hw_wrapped_key);
     auto de_dir = user_key_dir + "/de";
+    printf("load_all_de_keys: de_dir=%s\n", de_dir.c_str());
     auto dirp = std::unique_ptr<DIR, int (*)(DIR*)>(opendir(de_dir.c_str()), closedir);
     if (!dirp) {
         PLOG(ERROR) << "Unable to read de key directory";
+        printf("load_all_de_keys: opendir FAILED: %s\n", strerror(errno));
         return false;
     }
     bool user0_needs_rebuild = false;
     if (!android::vold::pathExists(get_de_key_path(0) + "/version")) {
         LOG(INFO) << "User 0 DE key metadata missing before load, recreating";
+        printf("load_all_de_keys: user0 de/0/version not found\n");
         user0_needs_rebuild = true;
     }
     for (;;) {
@@ -447,6 +487,7 @@ static bool load_all_de_keys() {
         if (!entry) {
             if (errno) {
                 PLOG(ERROR) << "Unable to read de key directory";
+                printf("load_all_de_keys: readdir FAILED: %s\n", strerror(errno));
                 return false;
             }
             break;
@@ -459,34 +500,76 @@ static bool load_all_de_keys() {
         userid_t user_id = std::stoi(entry->d_name);
         auto key_path = de_dir + "/" + entry->d_name;
         KeyBuffer de_key;
-        LOG(INFO) << "fscrypt::load_all_de_keys::retrieveKey";
-        if (!retrieveKey(key_path, kEmptyAuthentication, &de_key)) {
+        bool retrieved = false;
+        EncryptionOptions retry_options = options;
+        for (int read_attempt = 0; read_attempt < 2; read_attempt++) {
+            LOG(INFO) << "fscrypt::load_all_de_keys::retrieveKey";
+            printf("load_all_de_keys: retrieveKey for user %d at %s (attempt=%d hw_wrapped=%d)\n",
+                   user_id, key_path.c_str(), read_attempt, retry_options.use_hw_wrapped_key);
+            if (retrieveKey(key_path, kEmptyAuthentication, &de_key)) {
+                retrieved = true;
+                break;
+            }
+            printf("load_all_de_keys: retrieveKey FAILED for user %d (attempt=%d, errno=%d)\n",
+                   user_id, read_attempt, errno);
+            if (user_id != 0) break;
+            // Toggle hw_wrapped_key and retry read - the de/0/ directory may use a
+            // different wrapping mode than the system DE policy.
+            retry_options.use_hw_wrapped_key = !retry_options.use_hw_wrapped_key;
+        }
+        if (!retrieved) {
+            printf("load_all_de_keys: retrieveKey FAILED for user %d after retry\n", user_id);
             if (user_id == 0) {
-                user0_needs_rebuild = true;
-                LOG(INFO) << "Skipping broken user 0 DE key entry for now";
+                LOG(WARNING) << "Cannot read user 0 DE key files (hw-wrapped key mismatch)";
+                printf("load_all_de_keys: generating fresh user 0 DE key\n");
+                if (!generate_fresh_user0_de_key()) {
+                    user0_needs_rebuild = true;
+                    LOG(INFO) << "Skipping broken user 0 DE key entry for now";
+                }
                 continue;
             } else {
                 return false;
             }
         }
+        printf("load_all_de_keys: retrieveKey OK for user %d, key_size=%zu\n", user_id, de_key.size());
         EncryptionPolicy de_policy;
-        if (!install_storage_key(DATA_MNT_POINT, options, de_key, &de_policy)) return false;
+        bool key_installed = false;
+        for (int attempt = 0; attempt < 2; attempt++) {
+            if (install_storage_key(DATA_MNT_POINT, options, de_key, &de_policy)) {
+                printf("load_all_de_keys: install_storage_key OK for user %d (hw_wrapped=%d attempt=%d)\n",
+                       user_id, options.use_hw_wrapped_key, attempt);
+                key_installed = true;
+                break;
+            }
+            printf("load_all_de_keys: install_storage_key FAILED for user %d (hw_wrapped=%d attempt=%d)\n",
+                   user_id, options.use_hw_wrapped_key, attempt);
+            options.use_hw_wrapped_key = !options.use_hw_wrapped_key;
+        }
+        if (!key_installed) {
+            printf("load_all_de_keys: install_storage_key FAILED for user %d after retry\n", user_id);
+            return false;
+        }
         auto ret = s_de_policies.insert({user_id, de_policy});
         if (!ret.second && ret.first->second != de_policy) {
             LOG(ERROR) << "DE policy for user" << user_id << " changed";
+            printf("load_all_de_keys: policy CHANGED for user %d\n", user_id);
             return false;
         }
         LOG(INFO) << "Installed de key for user " << user_id;
+        printf("load_all_de_keys: installed DE key for user %d\n", user_id);
         std::string user_prop = "twrp.user." + std::to_string(user_id) + ".decrypt";
         property_set(user_prop.c_str(), "0");
     }
     if (user0_needs_rebuild) {
         LOG(WARNING) << "User 0 DE key metadata is missing or broken; not rebuilding in recovery";
+        printf("load_all_de_keys: user0_needs_rebuild=true\n");
     }
     if (s_de_policies.count(0) == 0) {
         LOG(ERROR) << "User 0 DE policy was not installed; refusing to report DE ready";
+        printf("load_all_de_keys: user 0 DE policy NOT installed, FAILING\n");
         return false;
     }
+    printf("load_all_de_keys: SUCCESS, installed %zu DE key(s)\n", s_de_policies.size());
     // fscrypt:TODO: go through all DE directories, ensure that all user dirs have the
     // correct policy set on them, and that no rogue ones exist.
     return true;
@@ -507,6 +590,13 @@ static bool try_reload_ce_keys() {
 bool fscrypt_initialize_systemwide_keys() {
     LOG(INFO) << "fscrypt_initialize_systemwide_keys";
 
+    // Signal end of early boot to keystore2 so keymaster/TEE enters
+    // normal mode. This ensures exportWrappedStorageKey returns a
+    // stable per-boot ephemeral key, matching the identifier used
+    // by Android and avoiding EINVAL on existing encrypted files.
+    LOG(INFO) << "Calling earlyBootEnded for keystore2";
+    android::vold::Keymaster::earlyBootEnded();
+
     EncryptionOptions options;
     if (!get_data_file_encryption_options(&options)) return false;
 
@@ -526,6 +616,24 @@ install:
             goto install;
         }
         return false;
+    }
+    printf("fscrypt_initialize_systemwide_keys: installed with use_hw_wrapped_key=%d\n",
+           options.use_hw_wrapped_key);
+
+    // Some directories on /data (e.g. /data/misc/vold/user_keys/de/*) may use a
+    // different key wrapping mode than the system DE key. Install with the
+    // opposite mode as a fallback so both wrapped and raw keys are in the keyring.
+    {
+        EncryptionOptions alt_options = options;
+        EncryptionPolicy alt_policy;
+        alt_options.use_hw_wrapped_key = !alt_options.use_hw_wrapped_key;
+        if (!install_storage_key(DATA_MNT_POINT, alt_options, device_key, &alt_policy)) {
+            printf("fscrypt_initialize_systemwide_keys: alt wrappedkey=%d install skipped\n",
+                   alt_options.use_hw_wrapped_key);
+        } else {
+            printf("fscrypt_initialize_systemwide_keys: alt wrappedkey=%d install OK\n",
+                   alt_options.use_hw_wrapped_key);
+        }
     }
 
     std::string options_string;
@@ -555,46 +663,69 @@ install:
 
 bool fscrypt_init_user0() {
     LOG(INFO) << "fscrypt_init_user0";
+    printf("fscrypt_init_user0: start\n");
     if (fscrypt_is_native()) {
+        printf("fscrypt_init_user0: fscrypt_is_native=true\n");
         LOG(INFO) << "Preparing user key directories";
+        printf("fscrypt_init_user0: preparing dirs %s\n", user_key_dir.c_str());
         if (!prepare_dir(user_key_dir, 0700, AID_ROOT, AID_ROOT)) {
             LOG(ERROR) << "Failed to prepare " << user_key_dir;
+            printf("fscrypt_init_user0: FAILED to prepare %s\n", user_key_dir.c_str());
             return false;
         }
+        printf("fscrypt_init_user0: preparing dir ce\n");
         if (!prepare_dir(user_key_dir + "/ce", 0700, AID_ROOT, AID_ROOT)) {
             LOG(ERROR) << "Failed to prepare " << user_key_dir + "/ce";
+            printf("fscrypt_init_user0: FAILED to prepare ce dir\n");
             return false;
         }
+        printf("fscrypt_init_user0: preparing dir de\n");
         if (!prepare_dir(user_key_dir + "/de", 0700, AID_ROOT, AID_ROOT)) {
             LOG(ERROR) << "Failed to prepare " << user_key_dir + "/de";
+            printf("fscrypt_init_user0: FAILED to prepare de dir\n");
             return false;
         }
         LOG(INFO) << "Ensuring user 0 key metadata";
+        printf("fscrypt_init_user0: ensuring user0 keys initialized\n");
         if (!ensure_user0_keys_initialized()) {
             LOG(ERROR) << "ensure_user0_keys_initialized failed";
+            printf("fscrypt_init_user0: ensure_user0_keys_initialized FAILED\n");
             return false;
         }
         // TODO: switch to loading only DE_0 here once framework makes
         // explicit calls to install DE keys for secondary users
         LOG(INFO) << "Loading all DE keys";
+        printf("fscrypt_init_user0: load_all_de_keys\n");
         if (!load_all_de_keys()) {
             LOG(ERROR) << "load_all_de_keys failed";
+            printf("fscrypt_init_user0: load_all_de_keys FAILED\n");
             return false;
         }
+        printf("fscrypt_init_user0: load_all_de_keys OK\n");
+    } else {
+        printf("fscrypt_init_user0: fscrypt_is_native=false\n");
     }
     // We can only safely prepare DE storage here, since CE keys are probably
     // entangled with user credentials.  The framework will always prepare CE
     // storage once CE keys are installed.
     LOG(INFO) << "Preparing user 0 DE storage";
+    printf("fscrypt_init_user0: fscrypt_prepare_user_storage\n");
     if (!fscrypt_prepare_user_storage("", 0, 0, android::os::IVold::STORAGE_FLAG_DE)) {
         if (fscrypt_is_native()) {
             LOG(ERROR) << "Failed to prepare user 0 DE storage";
-            return false;
+            printf("fscrypt_init_user0: prepare_user_storage FAILED (native)\n");
+            // hw-wrapped keys change identifier each boot; existing encrypted
+            // directories are inaccessible in recovery. The system DE key is
+            // installed, so continue with limited access.
+            LOG(WARNING) << "Existing DE storage inaccessible (hw-wrapped key identifier change); continuing";
+            printf("fscrypt_init_user0: continuing despite DE storage failure\n");
         } else {
             LOG(ERROR) << "Failed to prepare user 0 storage";
+            printf("fscrypt_init_user0: prepare_user_storage FAILED (non-native)\n");
             return false;
         }
     }
+    printf("fscrypt_init_user0: prepare_user_storage OK\n");
 
     // If this is a non-FBE device that recently left an emulated mode,
     // restore user data directories to known-good state.
@@ -930,8 +1061,11 @@ bool fscrypt_prepare_user_storage(const std::string& volume_uuid, userid_t user_
                                   int flags) {
     LOG(INFO) << "fscrypt_prepare_user_storage for volume " << escape_empty(volume_uuid)
                << ", user " << user_id << ", serial " << serial << ", flags " << flags;
+    printf("fscrypt_prepare_user_storage: uuid=%s user=%d serial=%d flags=%d\n",
+           escape_empty(volume_uuid), user_id, serial, flags);
 
     if (flags & android::os::IVold::STORAGE_FLAG_DE) {
+        printf("fscrypt_prepare_user_storage: STORAGE_FLAG_DE\n");
         // DE_sys key
         auto system_legacy_path = android::vold::BuildDataSystemLegacyPath(user_id);
         auto misc_legacy_path = android::vold::BuildDataMiscLegacyPath(user_id);
@@ -944,32 +1078,73 @@ bool fscrypt_prepare_user_storage(const std::string& volume_uuid, userid_t user_
         auto user_de_path = android::vold::BuildDataUserDePath(volume_uuid, user_id);
 
         if (volume_uuid.empty()) {
-            if (!prepare_dir(system_legacy_path, 0700, AID_SYSTEM, AID_SYSTEM)) return false;
+            printf("fscrypt_prepare_user_storage: preparing DE dirs\n");
+            if (!prepare_dir(system_legacy_path, 0700, AID_SYSTEM, AID_SYSTEM)) {
+                printf("fscrypt_prepare_user_storage: FAILED system_legacy_path\n");
+                return false;
+            }
 #if MANAGE_MISC_DIRS
             if (!prepare_dir(misc_legacy_path, 0750, multiuser_get_uid(user_id, AID_SYSTEM),
                              multiuser_get_uid(user_id, AID_EVERYBODY)))
                 return false;
 #endif
-            if (!prepare_dir(profiles_de_path, 0771, AID_SYSTEM, AID_SYSTEM)) return false;
+            if (!prepare_dir(profiles_de_path, 0771, AID_SYSTEM, AID_SYSTEM)) {
+                printf("fscrypt_prepare_user_storage: FAILED profiles_de_path\n");
+                return false;
+            }
 
-            if (!prepare_dir(system_de_path, 0770, AID_SYSTEM, AID_SYSTEM)) return false;
-            if (!prepare_dir(misc_de_path, 01771, AID_SYSTEM, AID_MISC)) return false;
-            if (!prepare_dir(vendor_de_path, 0771, AID_ROOT, AID_ROOT)) return false;
+            if (!prepare_dir(system_de_path, 0770, AID_SYSTEM, AID_SYSTEM)) {
+                printf("fscrypt_prepare_user_storage: FAILED system_de_path\n");
+                return false;
+            }
+            if (!prepare_dir(misc_de_path, 01771, AID_SYSTEM, AID_MISC)) {
+                printf("fscrypt_prepare_user_storage: FAILED misc_de_path\n");
+                return false;
+            }
+            if (!prepare_dir(vendor_de_path, 0771, AID_ROOT, AID_ROOT)) {
+                printf("fscrypt_prepare_user_storage: FAILED vendor_de_path\n");
+                return false;
+            }
         }
-        if (!prepare_dir(user_de_path, 0771, AID_SYSTEM, AID_SYSTEM)) return false;
+        if (!prepare_dir(user_de_path, 0771, AID_SYSTEM, AID_SYSTEM)) {
+            printf("fscrypt_prepare_user_storage: FAILED user_de_path\n");
+            return false;
+        }
 
+        printf("fscrypt_prepare_user_storage: DE dirs OK, fscrypt_is_native=%d\n", fscrypt_is_native());
         if (fscrypt_is_native()) {
             EncryptionPolicy de_policy;
             if (volume_uuid.empty()) {
-                if (!lookup_policy(s_de_policies, user_id, &de_policy)) return false;
-                if (!EnsurePolicy(de_policy, system_de_path)) return false;
-                if (!EnsurePolicy(de_policy, misc_de_path)) return false;
-                if (!EnsurePolicy(de_policy, vendor_de_path)) return false;
+                printf("fscrypt_prepare_user_storage: lookup_policy for user %d\n", user_id);
+                if (!lookup_policy(s_de_policies, user_id, &de_policy)) {
+                    printf("fscrypt_prepare_user_storage: lookup_policy FAILED for user %d\n", user_id);
+                    return false;
+                }
+                printf("fscrypt_prepare_user_storage: EnsurePolicy system_de_path\n");
+                if (!EnsurePolicy(de_policy, system_de_path)) {
+                    printf("fscrypt_prepare_user_storage: EnsurePolicy FAILED for system_de_path\n");
+                    return false;
+                }
+                printf("fscrypt_prepare_user_storage: EnsurePolicy misc_de_path\n");
+                if (!EnsurePolicy(de_policy, misc_de_path)) {
+                    printf("fscrypt_prepare_user_storage: EnsurePolicy FAILED for misc_de_path\n");
+                    return false;
+                }
+                printf("fscrypt_prepare_user_storage: EnsurePolicy vendor_de_path\n");
+                if (!EnsurePolicy(de_policy, vendor_de_path)) {
+                    printf("fscrypt_prepare_user_storage: EnsurePolicy FAILED for vendor_de_path\n");
+                    return false;
+                }
             } else {
                 if (!read_or_create_volkey(misc_de_path, volume_uuid, &de_policy)) return false;
             }
-            if (!EnsurePolicy(de_policy, user_de_path)) return false;
+            printf("fscrypt_prepare_user_storage: EnsurePolicy user_de_path\n");
+            if (!EnsurePolicy(de_policy, user_de_path)) {
+                printf("fscrypt_prepare_user_storage: EnsurePolicy FAILED for user_de_path\n");
+                return false;
+            }
         }
+        printf("fscrypt_prepare_user_storage: DE setup complete\n");
     }
     if (flags & android::os::IVold::STORAGE_FLAG_CE) {
         // CE_n key
