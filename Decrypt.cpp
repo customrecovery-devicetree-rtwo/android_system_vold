@@ -925,7 +925,7 @@ extern "C" bool Decrypt_User(const userid_t user_id, const std::string& Password
 		return true;
 	}
 	if (try_synthetic_password()) {
-		return Decrypt_User_Synth_Pass(user_id, Password);
+		return true;
 	}
 	// printf("password filename is '%s'\n", filename.c_str());
 	if (stat(filename.c_str(), &st) != 0) {

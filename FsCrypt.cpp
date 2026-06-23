@@ -311,59 +311,7 @@ static bool ensure_user0_keys_initialized();
 // NB this assumes that there is only one thread listening for crypt commands, because
 // it creates keys in a fixed location.
 static bool create_and_install_user_keys(userid_t user_id, bool create_ephemeral);
-
-static bool rebuild_user0_key_material() {
-    LOG(WARNING) << "Rebuilding user 0 CE key material in recovery";
-    printf("rebuild_user0_key_material: rebuilding user 0 CE key material\n");
-
-    if (s_ce_policies.count(0) != 0) {
-        printf("rebuild_user0_key_material: user 0 CE policy already installed\n");
-        return true;
-    }
-
-    EncryptionOptions options;
-    if (!get_data_file_encryption_options(&options)) {
-        printf("rebuild_user0_key_material: get_data_file_encryption_options FAILED\n");
-        return false;
-    }
-
-    KeyBuffer ce_key;
-    if (!generateStorageKey(makeGen(options), &ce_key)) {
-        printf("rebuild_user0_key_material: generateStorageKey FAILED\n");
-        return false;
-    }
-
-    auto const directory_path = get_ce_key_directory_path(0);
-    if (!prepare_dir(directory_path, 0700, AID_ROOT, AID_ROOT)) {
-        printf("rebuild_user0_key_material: prepare_dir FAILED for %s\n", directory_path.c_str());
-        return false;
-    }
-
-    auto const paths = get_ce_key_paths(directory_path);
-    std::string ce_key_path;
-    if (!get_ce_key_new_path(directory_path, paths, &ce_key_path)) {
-        printf("rebuild_user0_key_material: get_ce_key_new_path FAILED\n");
-        return false;
-    }
-
-    if (!android::vold::storeKeyAtomically(ce_key_path, user_key_temp, kEmptyAuthentication,
-                                           ce_key)) {
-        printf("rebuild_user0_key_material: storeKeyAtomically FAILED for %s\n",
-               ce_key_path.c_str());
-        return false;
-    }
-    fixate_user_ce_key(directory_path, ce_key_path, paths);
-
-    EncryptionPolicy ce_policy;
-    if (!install_storage_key(DATA_MNT_POINT, options, ce_key, &ce_policy)) {
-        printf("rebuild_user0_key_material: install_storage_key FAILED\n");
-        return false;
-    }
-
-    s_ce_policies[0] = ce_policy;
-    printf("rebuild_user0_key_material: installed fresh user 0 CE key\n");
-    return true;
-}
+static bool prepare_dir(const std::string& dir, mode_t mode, uid_t uid, gid_t gid);
 
 static bool read_and_install_user_ce_key(userid_t user_id,
                                          const android::vold::KeyAuthentication& auth) {
@@ -1040,16 +988,11 @@ bool fscrypt_unlock_user_key(userid_t user_id, int serial, const std::string& se
         }
         auto auth = authentication_from_hex(secret_hex);
         if (!auth) {
-            if (user_id == 0 && rebuild_user0_key_material()) return true;
             return false;
         }
         if (!read_and_install_user_ce_key(user_id, *auth)) {
-            if (user_id == 0 && rebuild_user0_key_material()) {
-                LOG(INFO) << "Rebuilt user 0 CE key material";
-            } else {
-                LOG(ERROR) << "Couldn't read key for " << user_id;
-                return false;
-            }
+            LOG(ERROR) << "Couldn't read key for " << user_id;
+            return false;
         }
     } else {
         // When in emulation mode, we just use chmod. However, we also
