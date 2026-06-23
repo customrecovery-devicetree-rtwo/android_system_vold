@@ -268,15 +268,16 @@ static bool get_data_file_encryption_options(EncryptionOptions* options) {
 
 static bool install_storage_key(const std::string& mountpoint, const EncryptionOptions& options,
                                 const KeyBuffer& key, EncryptionPolicy* policy) {
-    KeyBuffer ephemeral_wrapped_key;
-    if (options.use_hw_wrapped_key) {
-        if (!exportWrappedStorageKey(key, &ephemeral_wrapped_key)) {
-            LOG(ERROR) << "Failed to get ephemeral wrapped key";
-            return false;
-        }
-    }
-    return installKey(mountpoint, options, options.use_hw_wrapped_key ? ephemeral_wrapped_key : key,
-                      policy);
+    // Skip exportWrappedStorageKey (convertStorageKeyToEphemeral) in recovery.
+    // keystore2 does not run in recovery, so earlyBootEnded() is a no-op.
+    // The TEE stays in early boot mode, causing exportWrappedStorageKey to return
+    // a key with a different fscrypt identifier than what Android used during normal
+    // boot. This makes existing encrypted directories (like user_keys/de/0/)
+    // unreadable, causing load_all_de_keys to generate a fresh key (data loss).
+    //
+    // By passing the key from retrieveKey directly (already ICE-wrapped with the
+    // stable hardware key), the identifier remains consistent across boots.
+    return installKey(mountpoint, options, key, policy);
 }
 
 // Retrieve the options to use for encryption policies on adoptable storage.

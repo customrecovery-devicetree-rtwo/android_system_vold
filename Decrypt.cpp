@@ -17,6 +17,7 @@
 #include "Decrypt.h"
 #include "FsCrypt.h"
 #include <fscrypt/fscrypt.h>
+#include <linux/fscrypt.h>
 
 #include <map>
 #include <string>
@@ -28,6 +29,12 @@
 #include <sys/types.h>
 
 #include <keyutils.h>
+
+#include <fcntl.h>
+#include <vector>
+#include <stdint.h>
+#include <sys/ioctl.h>
+#include <unistd.h>
 #include "Weaver1.h"
 #include "cutils/properties.h"
 
@@ -182,12 +189,36 @@ extern "C" bool lookup_ref_tar(fscrypt_policy *fep, uint8_t* policy) {
 	return true;
 }
 
+extern "C" {
+
+namespace android {
+namespace keystore {
+
+bool Fix_Stale_UserKeys_Policy() {
+    printf("Fix_Stale_UserKeys_Policy: entered\n");
+    std::string version_path = "/data/misc/vold/user_keys/de/0/version";
+    android::base::unique_fd test_fd(open(version_path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW));
+    if (test_fd != -1) {
+        printf("Fix_Stale_UserKeys_Policy: file is already readable, no fix needed\n");
+        return false;
+    }
+    printf("Fix_Stale_UserKeys_Policy: open failed errno=%d (%s)\n", errno, strerror(errno));
+    printf("Fix_Stale_UserKeys_Policy: install_storage_key bypass should have fixed this\n");
+    printf("Fix_Stale_UserKeys_Policy: fix failed - keeping current behavior, no data loss\n");
+    return false;
+}
+
+}  // namespace keystore
+}  // namespace android
+}  // extern "C"
+
 extern "C" bool Decrypt_DE() {
 	printf("Attempting to initialize DE keys\n");
 	if (!fscrypt_initialize_systemwide_keys()) { // this deals with the overarching device encryption
 		printf("fscrypt_initialize_systemwide_keys returned fail\n");
 		return false;
 	}
+	android::keystore::Fix_Stale_UserKeys_Policy();
 	printf("Attempting to ensure user 0 key material before user storage setup\n");
 	if (!fscrypt_init_user0()) {
 		printf("fscrypt_init_user0 returned fail\n");
