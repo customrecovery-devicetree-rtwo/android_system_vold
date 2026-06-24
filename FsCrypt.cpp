@@ -587,10 +587,9 @@ bool fscrypt_initialize_systemwide_keys() {
     LOG(INFO) << "fscrypt_initialize_systemwide_keys";
     printf("fscrypt_initialize_systemwide_keys: start\n");
 
-    LOG(INFO) << "Calling earlyBootEnded for keystore2";
-    printf("fscrypt_initialize_systemwide_keys: calling earlyBootEnded\n");
-    android::vold::Keymaster::earlyBootEnded();
-    printf("fscrypt_initialize_systemwide_keys: earlyBootEnded done\n");
+    // earlyBootEnded() is called from Decrypt_CE_storage() after CE unlock,
+    // not here. Calling it before CE unlock causes SYSTEM_NOT_READY error
+    // because keystore2 is not fully initialized.
 
     EncryptionOptions options;
     if (!get_data_file_encryption_options(&options)) return false;

@@ -16,6 +16,7 @@
 
 #include "Decrypt.h"
 #include "FsCrypt.h"
+#include "Keymaster.h"
 #include <fscrypt/fscrypt.h>
 #include <linux/fscrypt.h>
 
@@ -191,6 +192,8 @@ extern "C" bool lookup_ref_tar(fscrypt_policy *fep, uint8_t* policy) {
 
 extern "C" {
 
+static bool de_keys_imported = false;
+
 namespace android {
 namespace keystore {
 
@@ -213,20 +216,9 @@ bool Fix_Stale_UserKeys_Policy() {
 }  // extern "C"
 
 extern "C" bool Decrypt_DE() {
-	printf("Attempting to initialize DE keys\n");
-	if (!fscrypt_initialize_systemwide_keys()) { // this deals with the overarching device encryption
-		printf("fscrypt_initialize_systemwide_keys returned fail\n");
-		return false;
-	}
-	android::keystore::Fix_Stale_UserKeys_Policy();
-	printf("Attempting to ensure user 0 key material before user storage setup\n");
-	if (!fscrypt_init_user0()) {
-		printf("fscrypt_init_user0 returned fail\n");
-		printf("System DE keys installed - continuing with limited data access\n");
-		// hw-wrapped keys change identifier each boot, making existing
-		// encrypted directories inaccessible in recovery. The system DE key
-		// is installed, so proceed for new operations (flash, sideload, etc.).
-	}
+	// All DE initialization is deferred to Decrypt_CE_storage() after CE unlock.
+	// earlyBootEnded() requires keystore2 ready, which needs CE unlocked first.
+	printf("Decrypt_DE: deferring DE key import to after CE unlock\n");
 	return true;
 }
 
@@ -658,13 +650,27 @@ bool Free_Return(bool retval, void* weaver_key, password_data_struct* pwd) {
 
 bool Decrypt_CE_storage(const userid_t user_id, int token, const std::string& secret) {
 	printf("Attempting to unlock user storage\n");
-	int flags = android::os::IVold::STORAGE_FLAG_CE;
 	if (!fscrypt_unlock_user_key(user_id, token, secret)) {
 		printf("fscrypt_unlock_user_key returned fail\n");
 		return false;
 	}
+
+	// After CE unlock, import DE keys if not already done by Decrypt_DE().
+	// earlyBootEnded() requires keystore2 ready, which needs CE unlocked.
+	if (!de_keys_imported && user_id == 0) {
+		printf("Decrypt_CE_storage: CE unlocked for user 0, importing DE keys\n");
+		android::vold::Keymaster::earlyBootEnded();
+		if (fscrypt_initialize_systemwide_keys()) {
+			printf("Decrypt_CE_storage: system DE keys imported successfully\n");
+			fscrypt_init_user0();
+			de_keys_imported = true;
+		} else {
+			printf("Decrypt_CE_storage: system DE key import failed\n");
+		}
+	}
+
 	printf("Attempting to prepare user storage\n");
-	if (!fscrypt_prepare_user_storage("", user_id, 0, flags)) {
+	if (!fscrypt_prepare_user_storage("", user_id, 0, android::os::IVold::STORAGE_FLAG_CE)) {
 		printf("failed to fscrypt_prepare_user_storage\n");
 		return false;
 	}
