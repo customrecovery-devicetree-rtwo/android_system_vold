@@ -19,6 +19,7 @@
 #include <android-base/logging.h>
 
 #include <aidl/android/hardware/security/keymint/SecurityLevel.h>
+#include <aidl/android/hardware/security/keymint/IKeyMintDevice.h>
 #include <aidl/android/security/maintenance/IKeystoreMaintenance.h>
 #include <aidl/android/system/keystore2/Domain.h>
 #include <aidl/android/system/keystore2/EphemeralStorageKeyResponse.h>
@@ -217,29 +218,45 @@ KeymasterOperation Keymaster::begin(const std::string& key, const km::Authorizat
 }
 
 void Keymaster::earlyBootEnded() {
-    printf("Keymaster::earlyBootEnded: connecting to maintenance service\n");
-    for (int attempt = 0; attempt < 10; attempt++) {
+    printf("Keymaster::earlyBootEnded: trying keystore2 maintenance service\n");
+    for (int attempt = 0; attempt < 3; attempt++) {
         ::ndk::SpAIBinder binder(AServiceManager_getService(maintenance_service_name));
         auto maint_service = ks2_maint::IKeystoreMaintenance::fromBinder(binder);
 
         if (!maint_service) {
-            printf("Keymaster::earlyBootEnded: service not available (attempt %d)\n", attempt);
+            printf("Keymaster::earlyBootEnded: keystore2 service not available (attempt %d)\n", attempt);
             usleep(500000);
             continue;
         }
 
-        printf("Keymaster::earlyBootEnded: calling earlyBootEnded (attempt %d)\n", attempt);
+        printf("Keymaster::earlyBootEnded: calling keystore2 earlyBootEnded (attempt %d)\n", attempt);
         auto rc = maint_service->earlyBootEnded();
         if (rc.isOk()) {
-            printf("Keymaster::earlyBootEnded: succeeded on attempt %d\n", attempt);
+            printf("Keymaster::earlyBootEnded: keystore2 succeeded on attempt %d\n", attempt);
             return;
         }
-        printf("Keymaster::earlyBootEnded: failed attempt %d, exception code=%d message=%s\n",
+        printf("Keymaster::earlyBootEnded: keystore2 failed attempt %d, exception code=%d message=%s\n",
                attempt, rc.getExceptionCode(), rc.getDescription().c_str());
-        logKeystore2ExceptionIfPresent(rc, "earlyBootEnded");
         usleep(500000);
     }
-    printf("Keymaster::earlyBootEnded: all attempts failed\n");
+
+    printf("Keymaster::earlyBootEnded: keystore2 failed, trying KeyMint directly\n");
+    ::ndk::SpAIBinder km_binder(AServiceManager_getService(
+            "android.hardware.security.keymint.IKeyMintDevice/default"));
+    auto keymint = km::IKeyMintDevice::fromBinder(km_binder);
+    if (!keymint) {
+        printf("Keymaster::earlyBootEnded: KeyMint device not available\n");
+        return;
+    }
+
+    printf("Keymaster::earlyBootEnded: calling KeyMint earlyBootEnded\n");
+    auto km_rc = keymint->earlyBootEnded();
+    if (km_rc.isOk()) {
+        printf("Keymaster::earlyBootEnded: KeyMint succeeded!\n");
+    } else {
+        printf("Keymaster::earlyBootEnded: KeyMint failed, exception code=%d message=%s\n",
+               km_rc.getExceptionCode(), km_rc.getDescription().c_str());
+    }
 }
 
 void Keymaster::deleteAllKeys() {
