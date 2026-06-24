@@ -268,16 +268,15 @@ static bool get_data_file_encryption_options(EncryptionOptions* options) {
 
 static bool install_storage_key(const std::string& mountpoint, const EncryptionOptions& options,
                                 const KeyBuffer& key, EncryptionPolicy* policy) {
-    // Skip exportWrappedStorageKey (convertStorageKeyToEphemeral) in recovery.
-    // keystore2 does not run in recovery, so earlyBootEnded() is a no-op.
-    // The TEE stays in early boot mode, causing exportWrappedStorageKey to return
-    // a key with a different fscrypt identifier than what Android used during normal
-    // boot. This makes existing encrypted directories (like user_keys/de/0/)
-    // unreadable, causing load_all_de_keys to generate a fresh key (data loss).
-    //
-    // By passing the key from retrieveKey directly (already ICE-wrapped with the
-    // stable hardware key), the identifier remains consistent across boots.
-    return installKey(mountpoint, options, key, policy);
+    KeyBuffer ephemeral_wrapped_key;
+    if (options.use_hw_wrapped_key) {
+        if (!exportWrappedStorageKey(key, &ephemeral_wrapped_key)) {
+            LOG(ERROR) << "Failed to get ephemeral wrapped key";
+            return false;
+        }
+    }
+    return installKey(mountpoint, options, options.use_hw_wrapped_key ? ephemeral_wrapped_key : key,
+                      policy);
 }
 
 // Retrieve the options to use for encryption policies on adoptable storage.
@@ -586,13 +585,12 @@ static bool try_reload_ce_keys() {
 
 bool fscrypt_initialize_systemwide_keys() {
     LOG(INFO) << "fscrypt_initialize_systemwide_keys";
+    printf("fscrypt_initialize_systemwide_keys: start\n");
 
-    // Signal end of early boot to keystore2 so keymaster/TEE enters
-    // normal mode. This ensures exportWrappedStorageKey returns a
-    // stable per-boot ephemeral key, matching the identifier used
-    // by Android and avoiding EINVAL on existing encrypted files.
     LOG(INFO) << "Calling earlyBootEnded for keystore2";
+    printf("fscrypt_initialize_systemwide_keys: calling earlyBootEnded\n");
     android::vold::Keymaster::earlyBootEnded();
+    printf("fscrypt_initialize_systemwide_keys: earlyBootEnded done\n");
 
     EncryptionOptions options;
     if (!get_data_file_encryption_options(&options)) return false;
@@ -616,6 +614,13 @@ install:
     }
     printf("fscrypt_initialize_systemwide_keys: installed with use_hw_wrapped_key=%d\n",
            options.use_hw_wrapped_key);
+    {
+        char id_hex[33];
+        for (size_t i = 0; i < device_policy.key_raw_ref.size() && i < 16; i++)
+            snprintf(id_hex + i*2, 3, "%02x", (uint8_t)device_policy.key_raw_ref[i]);
+        id_hex[32] = 0;
+        printf("fscrypt_initialize_systemwide_keys: computed identifier=%s\n", id_hex);
+    }
 
     // Some directories on /data (e.g. /data/misc/vold/user_keys/de/*) may use a
     // different key wrapping mode than the system DE key. Install with the

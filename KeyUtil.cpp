@@ -314,9 +314,7 @@ bool installKey(const std::string& mountpoint, const EncryptionOptions& options,
     std::string ref = keyrefstring(policy->key_raw_ref);
     LOG(INFO) << "Installed fscrypt key with ref " << ref << " to " << mountpoint;
 
-    if (!options.use_hw_wrapped_key) {
-        if (!installProvisioningKey(key, ref, arg->key_spec)) return false;
-    }
+    if (!installProvisioningKey(key, ref, arg->key_spec)) return false;
     return true;
 }
 

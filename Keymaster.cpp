@@ -217,16 +217,29 @@ KeymasterOperation Keymaster::begin(const std::string& key, const km::Authorizat
 }
 
 void Keymaster::earlyBootEnded() {
-    ::ndk::SpAIBinder binder(AServiceManager_getService(maintenance_service_name));
-    auto maint_service = ks2_maint::IKeystoreMaintenance::fromBinder(binder);
+    printf("Keymaster::earlyBootEnded: connecting to maintenance service\n");
+    for (int attempt = 0; attempt < 10; attempt++) {
+        ::ndk::SpAIBinder binder(AServiceManager_getService(maintenance_service_name));
+        auto maint_service = ks2_maint::IKeystoreMaintenance::fromBinder(binder);
 
-    if (!maint_service) {
-        LOG(ERROR) << "Unable to connect to keystore2 maintenance service for earlyBootEnded";
-        return;
+        if (!maint_service) {
+            printf("Keymaster::earlyBootEnded: service not available (attempt %d)\n", attempt);
+            usleep(500000);
+            continue;
+        }
+
+        printf("Keymaster::earlyBootEnded: calling earlyBootEnded (attempt %d)\n", attempt);
+        auto rc = maint_service->earlyBootEnded();
+        if (rc.isOk()) {
+            printf("Keymaster::earlyBootEnded: succeeded on attempt %d\n", attempt);
+            return;
+        }
+        printf("Keymaster::earlyBootEnded: failed attempt %d, exception code=%d message=%s\n",
+               attempt, rc.getExceptionCode(), rc.getDescription().c_str());
+        logKeystore2ExceptionIfPresent(rc, "earlyBootEnded");
+        usleep(500000);
     }
-
-    auto rc = maint_service->earlyBootEnded();
-    logKeystore2ExceptionIfPresent(rc, "earlyBootEnded");
+    printf("Keymaster::earlyBootEnded: all attempts failed\n");
 }
 
 void Keymaster::deleteAllKeys() {
