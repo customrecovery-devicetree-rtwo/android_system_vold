@@ -16,7 +16,6 @@
 
 #include "Decrypt.h"
 #include "FsCrypt.h"
-#include "Keymaster.h"
 #include <fscrypt/fscrypt.h>
 #include <linux/fscrypt.h>
 
@@ -195,6 +194,12 @@ extern "C" {
 static bool de_keys_imported = false;
 
 namespace android {
+namespace vold {
+    class Keymaster {
+    public:
+        static void earlyBootEnded();
+    };
+}
 namespace keystore {
 
 bool Fix_Stale_UserKeys_Policy() {
